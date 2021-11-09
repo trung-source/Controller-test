@@ -73,6 +73,7 @@ class ProjectController(app_manager.RyuApp):
         self.adjacency = defaultdict(dict)
         self.bandwidths = defaultdict(lambda: defaultdict(lambda: DEFAULT_BW))
         self.sw_port = {}
+        self.count = 0
         
         if DEBUGING == 1:
             self.logger.setLevel(logging.DEBUG)
@@ -141,16 +142,18 @@ class ProjectController(app_manager.RyuApp):
         # print('------')
         # print(e1,e2)
         # print(not self.tx_byte_int[s1][e1] or not self.tx_byte_int[s2][e2])
-        if self.tx_byte_int[s1][e1] or self.tx_byte_int[s2][e2]:
+        if not self.tx_byte_int or not self.tx_byte_int.setdefault(s1,{}):
         # print(self.tx_byte_int)
+            print("No bandwitdh")
+            bl = min(self.bandwidths[s1][e1], self.bandwidths[s2][e2])
+            print(bl)
+            
+        else:
             print("bandwitdh")
             bl = min(self.tx_byte_int[s1][e1], self.tx_byte_int[s2][e2])
             
             print(bl)
-        else:
-            print("No bandwitdh")
-            bl = min(self.bandwidths[s1][e1], self.bandwidths[s2][e2])
-            print(bl)
+            
         # ew = REFERENCE_BW/bl
         ew = bl
         print("linkcost",ew)
@@ -282,14 +285,17 @@ class ProjectController(app_manager.RyuApp):
                 if len(out_ports) > 1:
                     group_id = None
                     group_new = False
-
+                    
+                    
 
                     if (node, src, dst) not in self.multipath_group_ids:
+                        self.all_group_id.setdefault(src,{})
                         group_new = True
                         self.multipath_group_ids[
                             node, src, dst] = self.generate_openflow_gid(src,dst)
-                        self.all_group_id.setdefault(self.multipath_group_ids[
+                        self.all_group_id[src].setdefault(self.multipath_group_ids[
                             node, src, dst], {})
+                        
                     group_id = self.multipath_group_ids[node, src, dst]
 
 
@@ -302,9 +308,10 @@ class ProjectController(app_manager.RyuApp):
                     for port, weight in out_ports:
                         bucket_weight = int(round((1 - weight/sum_of_pw) * 10))
                         # self.all_group_id[group_id].setdefault(src,{})
-                        self.all_group_id[group_id][port]=bucket_weight
-                        # print(self.all_group_id)
+                        self.all_group_id[src][group_id][port]=bucket_weight
                         # bucket_weight = 50
+                        # print(self.all_group_id)
+                        
                         if VERBOSE == 1:
                             print("bucketw of node{},outport{}:{}".format(node,port,bucket_weight))
                         bucket_action = [ofp_parser.OFPActionOutput(port)]
@@ -393,6 +400,8 @@ class ProjectController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        self.logger.info("PACKETIN %d" % (self.count))
+        self.count += 1
         msg = ev.msg
         datapath = msg.datapath
         ofproto = datapath.ofproto
@@ -433,16 +442,17 @@ class ProjectController(app_manager.RyuApp):
 
 
         if arp_pkt:
-            # # print dpid, pkt
-            # print("datapath id: "+str(dpid))
-            # print("port: "+str(in_port))
-            # print(("pkt_eth.dst: " + str(eth.dst)))
-            # print(("pkt_eth.src: " + str(eth.src)))
-            # print(("pkt_arp: " + str(arp_pkt)))
-            # print(("pkt_arp:src_ip: " + str(arp_pkt.src_ip)))
-            # print(("pkt_arp:dst_ip: " + str(arp_pkt.dst_ip)))
-            # print(("pkt_arp:src_mac: " + str(arp_pkt.src_mac)))
-            # print(("pkt_arp:dst_mac: " + str(arp_pkt.dst_mac)))
+            # print dpid, pkt
+            if VERBOSE == 1:
+                print("datapath id: "+str(dpid))
+                print("port: "+str(in_port))
+                print(("pkt_eth.dst: " + str(eth.dst)))
+                print(("pkt_eth.src: " + str(eth.src)))
+                print(("pkt_arp: " + str(arp_pkt)))
+                print(("pkt_arp:src_ip: " + str(arp_pkt.src_ip)))
+                print(("pkt_arp:dst_ip: " + str(arp_pkt.dst_ip)))
+                print(("pkt_arp:src_mac: " + str(arp_pkt.src_mac)))
+                print(("pkt_arp:dst_mac: " + str(arp_pkt.dst_mac)))
             
             src_ip = arp_pkt.src_ip
             dst_ip = arp_pkt.dst_ip
@@ -454,12 +464,12 @@ class ProjectController(app_manager.RyuApp):
                 self.arp_table[src_ip] = src
                 h1 = self.hosts[src]
                 h2 = self.hosts[dst]
-                if h1[1] not in self.sw_port[h1[0]]:
-                    self.sw_port[h1[0]].append(h1[1])
-                    # print('---------------------------port',self.sw_port)
-                if h2[1] not in self.sw_port[h2[0]]:
-                    self.sw_port[h2[0]].append(h2[1])
-                    # print('---------------------------port',self.sw_port)
+                # if h1[1] not in self.sw_port[h1[0]]:
+                #     self.sw_port[h1[0]].append(h1[1])
+                #     # print('---------------------------port',self.sw_port)
+                # if h2[1] not in self.sw_port[h2[0]]:
+                #     self.sw_port[h2[0]].append(h2[1])
+                #     # print('---------------------------port',self.sw_port)
                 
                 #Install path: dpid src, src in_port, dpid dst, dpid in_port, src_ip, dst_ip
                 if VERBOSE == 1:
@@ -585,7 +595,7 @@ class ProjectController(app_manager.RyuApp):
         req = parser.OFPPortStatsRequest(datapath, 0, ofproto.OFPP_ANY)
         datapath.send_msg(req)
 
-    def delete_flow_and_reset(self, datapath, table_id):
+    def delete_flow(self, datapath, table_id):
         
        
         """Removing all flow entries."""
@@ -601,21 +611,6 @@ class ProjectController(app_manager.RyuApp):
         
         datapath.send_msg(flow_mod)
         
-        
-        self.send_group_mod(datapath)
-        
-        
-        #Reset
-        self.arp_table = {}
-        self.group_id_count = 0
-        self.group_ids = []
-        self.all_group_id = {}
-        self.multipath_group_ids = {}
-        self.sw_port = {}
-        # self.hosts = {}
-        
-        
-    
     
     def remove_table_flows(self, datapath, table_id, match, instructions):
         """Create OFP flow mod message to remove flows from table."""
@@ -634,31 +629,74 @@ class ProjectController(app_manager.RyuApp):
     def send_group_mod(self, datapath):
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
-
-        for group_id in self.all_group_id.keys():
-            #buckets
-            buckets = []
-            for port in self.all_group_id[group_id].keys():
-                bucket_weight = self.all_group_id[group_id][port] 
-                
-                
-                
-                
-                bucket_action = [ofp_parser.OFPActionOutput(port)]
-                # bucket_action = []
-                buckets.append(
-                                ofp_parser.OFPBucket(
-                                    weight=bucket_weight,
-                                    watch_port=port,
-                                    watch_group=ofp.OFPG_ANY,
-                                    actions=bucket_action
+        
+        if not self.all_group_id or not self.all_group_id.setdefault(datapath.id,{}):
+            return
+        else:
+            for group_id in self.all_group_id[datapath.id].keys():
+                #buckets
+                buckets = []
+                for port in self.all_group_id[datapath.id][group_id].keys():
+                    bucket_weight = self.all_group_id[datapath.id][group_id][port] 
+                    
+                    
+                    
+                    
+                    bucket_action = [ofp_parser.OFPActionOutput(port)]
+                    # bucket_action = []
+                    buckets.append(
+                                    ofp_parser.OFPBucket(
+                                        weight=bucket_weight,
+                                        watch_port=port,
+                                        watch_group=ofp.OFPG_ANY,
+                                        actions=bucket_action
+                                    )
                                 )
-                            )
-                
-                self.logger.info("gid:%d port:%d bucketw:%d buckets %s" %(group_id,port,bucket_weight,buckets))
+                    
+                    self.logger.info("dataid:%d gid:%d port:%d bucketw:%d buckets %s" 
+                                        %(datapath.id,group_id,port,bucket_weight,buckets))
+        
+                req = ofp_parser.OFPGroupMod(datapath, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT, group_id)  
+                datapath.send_msg(req)
+
     
-            req = ofp_parser.OFPGroupMod(datapath, ofp.OFPGC_DELETE,ofp.OFPGT_SELECT, group_id, buckets)  
-            datapath.send_msg(req)
+    # def groupdel(datapath=None, group_id=ofp.OFPG_ALL):
+    # # """Delete a group (default all groups)."""
+    
+    #     return parser.OFPGroupMod(
+    #         datapath,
+    #         ofp.OFPGC_DELETE,
+    #         0,
+    #         group_id)
+        
+    def delete_group_mod(self, datapath):
+
+            
+        
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+
+        # for dst in self.all_group_id[datapath.id].keys():
+        # self.logger.info("dpid:%s "
+        #                             %(datapath.id))
+        
+        # self.logger.info("allgr:%s "
+        #                             %(self.all_group_id))
+
+        if not self.all_group_id or not self.all_group_id.setdefault(datapath.id,{}):
+            return
+        else:
+            for group_id in self.all_group_id[datapath.id].keys():
+                #buckets
+        
+                # self.logger.info("dataid:%d gID:%d" %(datapath.id,group_id))
+
+                
+                # group_id = ofp.OFPG_ALL to delete all group
+                req = ofp_parser.OFPGroupMod(datapath, ofp.OFPGC_DELETE, 0, group_id)  
+                datapath.send_msg(req)
+            del self.all_group_id[datapath.id]
+                
 
 
         
@@ -711,131 +749,114 @@ class ProjectController(app_manager.RyuApp):
                     
         # print(self.tx_byte_int)
         
-        
+    
+    @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
+    def port_status_handler(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        ofp = dp.ofproto
 
+        if msg.reason == ofp.OFPPR_ADD:
+            reason = 'ADD'
+        elif msg.reason == ofp.OFPPR_DELETE:
+            reason = 'DELETE'
+        elif msg.reason == ofp.OFPPR_MODIFY:
+            reason = 'MODIFY'
+        else:
+            reason = 'unknown'
+            
+        # port = msg.desc.port_no
+
+        port_attr = msg.desc
+        
+        self.logger.info('OFPPortStatus received: reason=%s desc=%s' ,
+                          reason, msg.desc)
         
         
-    @set_ev_cls(dpset.EventPortModify, MAIN_DISPATCHER)
-    def port_modify_handler(self, ev):
-        dp = ev.dp
-        port_attr = ev.port
-        dp_str = dpid_lib.dpid_to_str(dp.id)
+        
+    # Port information:
         # self.logger.info("\t ***switch dpid=%s"
         #                  "\n \t port_no=%d hw_addr=%s name=%s config=0x%08x "
         #                  "\n \t state=0x%08x curr=0x%08x advertised=0x%08x "
         #                  "\n \t supported=0x%08x peer=0x%08x curr_speed=%d max_speed=%d" %
-        #                  (dp_str, port_attr.port_no, port_attr.hw_addr,
+        #                  (dp.id, port_attr.port_no, port_attr.hw_addr,
         #                   port_attr.name, port_attr.config,
         #                   port_attr.state, port_attr.curr, port_attr.advertised,
         #                   port_attr.supported, port_attr.peer, port_attr.curr_speed,
         #                   port_attr.max_speed))
         
-        s1 = dp.id
+        
+        
         out_port = port_attr.port_no
         host_dist = False
+        remove_host = []
         if port_attr.state == 1:
             for host in self.hosts:
-                if out_port == self.hosts[host][1]:
+                if out_port == self.hosts[host][1] and self.hosts[host][0] == dp.id:
                     host_dist = True
                     self.logger.info("Host %s disconnected: dpid:%d port:%d " % (host,self.hosts[host][0],self.hosts[host][1]))
-                    del self.hosts[host]
+                    # del self.hosts[host]
+                    remove_host.append(host)
                     ip = self.get_ip(host)
                     del self.arp_table[ip]
-                    # self.logger.info("arp %s  " % (self.hosts))
-                    
-                    
-                    break
+                    # self.logger.info("arp %s  " % (self.hosts)
             if host_dist == False:
+            
                 #del port flow and group
+                self.count += 1
                 self.logger.info("Port sw-sw down")
                 for i in self.datapath_list.keys():
-                    self.delete_flow_and_reset(self.datapath_list[i],0)
+                    # self.delete_flow(self.datapath_list[i],0)
                     self.logger.info("Reset Topo And ready to install path")
-                    
-                #del flow and group ...
+                    self.delete_group_mod(self.datapath_list[i])
+                # self.all_group_id = {}
+
+                
+                self.multipath_group_ids = {}
+                self.group_id_count =0
+                self.group_ids = []
+                # self.arp_table = {}
+                self.sw_port = {}
+                # self.hosts = {}
+                return
+                #del flow and group ...    
             else:
                 #del host flow and group
-                pass
-                
+                for host in remove_host:
+                    del self.hosts[host]
+                for i in self.datapath_list.keys():
+                    # self.delete_flow(self.datapath_list[i],0)
+                    self.logger.info("Reset Topo And ready to install path")
+                    self.delete_group_mod(self.datapath_list[i])
+                    self.multipath_group_ids = {}
+                    self.group_id_count =0
+                    self.group_ids = []
+                    # self.arp_table = {}
+                    self.sw_port = {}
+           
+        elif port_attr.state == 0:
+            pass  
+        
+        
+    #   #EventOFPPortStatsReply  
+    # @set_ev_cls(ofp_event.EventOFPPortStateChange, MAIN_DISPATCHER)
+    # def port_modify_handler(self, ev):
+    #     # dp = ev.dp
+    #     # port_attr = ev.port
+    #     dp = ev.datapath
+        
+
+    #     body = ev.reason
+    #     port = ev.port_no
+        
+    #     self.logger.info("dpid: %d reason: %s port: %d"%(dp.id,body,port))
+        
+   
+ 
+   
                 
                 
             
-            # adjacency = list(self.adjacency[s1].items())
-            # for i in adjacency :
-            #     count = 0
-            #     s2 = i[0]
-            #     port = i[1]
-            #     if out_port == port:
-            #         # self.logger.info("\t ***Before=%s"
-            #         #     %
-            #         #     (self.adjacency))
-                    
-            #         h1 = {}
-            #         h2 = {}
-            #         del self.adjacency[s1][s2]
-            #         del self.adjacency[s2][s1]
-            #         for host in self.hosts:
-            #             self.logger.info("\t ***h1r=%s"
-            #             %
-            #             (self.hosts[host],))
-            #             if self.hosts[host][0] == s1:
-            #                 self.logger.info("TRUE----------------------------")
-            #                 h1[host] = self.hosts[host]
-                            
-            #             elif self.hosts[host][0] == s2:
-            #                 h2[host] = self.hosts[host]
-            #                 # h2 = (self.hosts[host][0])  
-                              
-            #         # for dst_ip in list(self.arp_table.items())
-            #         # self.logger.info("\t ***After=%s"
-            #         #     %
-            #         #     (h1,))
-                    
-            #         datapath =dp
-            #         ofproto = datapath.ofproto
-            #         parser = datapath.ofproto_parser
-                    
-                    
-                    
-            #         for hs_1 in h1.keys():
-            #             src_ip = self.get_ip(hs_1)
-            #             for hs_2 in h2.keys():
-            #                 dst_ip = self.get_ip(hs_2)
-                        
-            #              #Install path: dpid src, src in_port, dpid dst, dpid in_port, src_ip, dst_ip
-            #                 out_port = self.install_backup_paths(h1[hs_1][0], h1[hs_1][1], h2[hs_2][0], h2[hs_2][1], src_ip, dst_ip)
-            #                 actions = [parser.OFPActionOutput(out_port)]
-
-
-            #                 # data = None
-            #                 # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            #                 #     data = msg.data
-
-
-            #                 out = parser.OFPPacketOut(
-            #                     datapath=datapath, in_port=h1[hs_1][1],
-            #                     actions=actions)
-            #                 datapath.send_msg(out)
-                            
-                            
-            #                 out_port = self.install_backup_paths(h2[hs_2][0], h2[hs_2][1], h1[hs_1][0], h1[h1][1], dst_ip, src_ip) # reverse
-                            
-            #                 actions = [parser.OFPActionOutput(out_port)]
-
-
-            #                 # data = None
-            #                 # if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            #                 #     data = msg.data
-
-
-            #                 out = parser.OFPPacketOut(
-            #                     datapath=datapath, in_port=h2[hs_2][1],
-            #                     actions=actions)
-            #                 datapath.send_msg(out)
-
-        elif port_attr.state == 0:
-            pass
-        
         
     #get ip from arp table with host
     def get_ip(self,host):
