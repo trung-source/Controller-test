@@ -219,8 +219,6 @@ class ProjectController(app_manager.RyuApp):
         return int(s)
 
 
-
-
     def install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst):
         computation_start = time.time()
         paths = self.get_optimal_paths(src, dst)
@@ -233,7 +231,7 @@ class ProjectController(app_manager.RyuApp):
         switches_in_paths = set().union(*paths)
         # print(switches_in_paths)
         if VERBOSE == 1:
-            # print(paths_with_ports)
+            print(paths_with_ports)
             # print(pw)
             print("#adjacency",self.adjacency)
 
@@ -260,7 +258,177 @@ class ProjectController(app_manager.RyuApp):
                 i += 1
             if VERBOSE == 1:
                 print("-------------------------------")
-                print("\tports",ports )
+                print("\tnode {}: ports{}".format(node,ports) ) 
+
+            for in_port in ports:
+                # Ipv4
+                match_ip = ofp_parser.OFPMatch(
+                    eth_type=0x0800, 
+                    ipv4_src=ip_src, 
+                    ipv4_dst=ip_dst
+                )
+                # ARP
+                match_arp = ofp_parser.OFPMatch(
+                    eth_type=0x0806, 
+                    arp_spa=ip_src, 
+                    arp_tpa=ip_dst
+                )
+                
+
+
+                out_ports = ports[in_port]
+                # print("pos4type",type(out_ports[0]))
+                # print("pos4type",type(out_ports[0][0]),type(out_ports[0][1]))
+            
+             
+                dup_port = {}
+                for i in range(0,len(out_ports)-1):
+                    for j in range(i+1,len(out_ports)):
+                        if out_ports[i][0] == out_ports[j][0]:
+                            if out_ports[i][0] not in dup_port:
+                                dup_port.setdefault(out_ports[i][0],out_ports[i][1]+out_ports[j][1])
+                            else:
+                                dup_port[out_ports[i][0]]+=out_ports[j][1]
+                                
+                print("dup: ", dup_port)
+                
+                del_port = out_ports.copy()
+             
+                for i in dup_port.keys():
+                    a=0
+                    for j in range(len(del_port)):
+                        if i == del_port[j][0]:
+                            out_ports.pop(a)
+                            a = a - 1
+                        a = a+1
+                    del_port = out_ports.copy()
+                            
+                    out_ports.append((i, dup_port[i]))
+                # print("pos",out_ports_1)
+                # print("postype",type(out_ports_1[0]))
+                # print("postype",type(out_ports_1[0][0]),type(out_ports_1[0][1]))
+                          
+                                
+                            
+                    
+                    
+                if VERBOSE == 1:
+                    print("\t\t-Outport",out_ports )
+
+
+                if len(out_ports) > 1:
+                    group_id = None
+                    group_new = False
+                    
+                    
+
+                    if (node, src, dst) not in self.multipath_group_ids:
+                        self.all_group_id.setdefault(src,{})
+                        group_new = True
+                        self.multipath_group_ids[
+                            node, src, dst] = self.generate_openflow_gid(src,dst)
+                        self.all_group_id[src].setdefault(self.multipath_group_ids[
+                            node, src, dst], {})
+                        
+                    group_id = self.multipath_group_ids[node, src, dst]
+
+
+                    buckets = []
+                    if VERBOSE == 1:
+                        print("node at ",node," out ports : ",out_ports)
+                        print("groupid",group_id)
+                        
+                        
+                    for port, weight in out_ports:
+                        bucket_weight = int(round((1 - weight/sum_of_pw) * 10))
+                        # self.all_group_id[group_id].setdefault(src,{})
+                        self.all_group_id[src][group_id][port]=bucket_weight
+                        # bucket_weight = 50
+                        # print(self.all_group_id)
+                        
+                        if VERBOSE == 1:
+                            print("bucketw of node{},outport{}:{}".format(node,port,bucket_weight))
+                        bucket_action = [ofp_parser.OFPActionOutput(port)]
+                        buckets.append(
+                            ofp_parser.OFPBucket(
+                                weight=bucket_weight,
+                                watch_port=port,
+                                watch_group=ofp.OFPG_ANY,
+                                actions=bucket_action
+                            )
+                        )
+
+
+                    if group_new:
+                        req = ofp_parser.OFPGroupMod(
+                            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, group_id,
+                            buckets
+                        )
+                        dp.send_msg(req)
+                    else:
+                        req = ofp_parser.OFPGroupMod(
+                            dp, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT,
+                            group_id, buckets)
+                        dp.send_msg(req)
+
+
+                    actions = [ofp_parser.OFPActionGroup(group_id)]
+
+
+                    self.add_flow(dp, 32768, match_ip, actions)
+                    self.add_flow(dp, 1, match_arp, actions)
+
+
+                elif len(out_ports) == 1:
+                    actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
+
+
+                    self.add_flow(dp, 32768, match_ip, actions)
+                    self.add_flow(dp, 1, match_arp, actions)
+        print("Path installation finished in ", time.time() - computation_start )
+        print(paths_with_ports[0][src][1])
+        return paths_with_ports[0][src][1]
+
+    def old_install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst):
+        computation_start = time.time()
+        paths = self.get_optimal_paths(src, dst)
+        pw = []
+        for path in paths:
+            pw.append(self.get_path_cost(path))
+            print(path, "cost = ", pw[len(pw) - 1])
+        sum_of_pw = sum(pw) * 1.0
+        paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
+        switches_in_paths = set().union(*paths)
+        # print(switches_in_paths)
+        if VERBOSE == 1:
+            print(paths_with_ports)
+            # print(pw)
+            print("#adjacency",self.adjacency)
+
+        for node in switches_in_paths:
+
+            dp = self.datapath_list[node]
+            ofp = dp.ofproto
+            ofp_parser = dp.ofproto_parser
+
+
+            # pw is total cost of a path (path weight)
+            # ports contain inport:(outport,pw)
+            ports = defaultdict(list)
+            actions = []
+            i = 0
+
+
+            for path in paths_with_ports:
+                if node in path:
+                    in_port = path[node][0]
+                    out_port = path[node][1]
+                    if (out_port, pw[i]) not in ports[in_port]:
+                        ports[in_port].append((out_port, pw[i]))
+                i += 1
+            if VERBOSE == 1:
+                print("-------------------------------")
+                print("\tnode {}: ports{}".format(node,ports) ) 
 
             for in_port in ports:
                 # Ipv4
@@ -278,6 +446,10 @@ class ProjectController(app_manager.RyuApp):
 
 
                 out_ports = ports[in_port]
+               
+                            
+                    
+                    
                 if VERBOSE == 1:
                     print("\t\t-Outport",out_ports )
 
@@ -400,7 +572,7 @@ class ProjectController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
-#         self.logger.info("PACKETIN %d" % (self.count))
+        # self.logger.info("PACKETIN %d" % (self.count))
         self.count += 1
         msg = ev.msg
         datapath = msg.datapath
@@ -453,9 +625,11 @@ class ProjectController(app_manager.RyuApp):
                 print(("pkt_arp:dst_ip: " + str(arp_pkt.dst_ip)))
                 print(("pkt_arp:src_mac: " + str(arp_pkt.src_mac)))
                 print(("pkt_arp:dst_mac: " + str(arp_pkt.dst_mac)))
+                # dst_mac will be 00:00:00:00:00:00 when host is unknown (ARPRequest)
             
             src_ip = arp_pkt.src_ip
             dst_ip = arp_pkt.dst_ip
+            
             
             
             
@@ -470,6 +644,8 @@ class ProjectController(app_manager.RyuApp):
                 # if h2[1] not in self.sw_port[h2[0]]:
                 #     self.sw_port[h2[0]].append(h2[1])
                 #     # print('---------------------------port',self.sw_port)
+                if h1[0] == 5:
+                        print("dpid5")
                 
                 #Install path: dpid src, src in_port, dpid dst, dpid in_port, src_ip, dst_ip
                 if VERBOSE == 1:
@@ -478,16 +654,20 @@ class ProjectController(app_manager.RyuApp):
                 self.install_paths(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
             elif arp_pkt.opcode == arp.ARP_REQUEST:
                 if dst_ip in self.arp_table:
+                    print("dst_ip found in arptable")
                     self.arp_table[src_ip] = src
                     dst_mac = self.arp_table[dst_ip]
                     h1 = self.hosts[src]
                     h2 = self.hosts[dst_mac]
+                    if h1[0] == 5:
+                        print("dpid5")
                     out_port = self.install_paths(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip)
                     self.install_paths(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
             # if VERBOSE == 1:
             #     print("--arptable",self.arp_table)
         # print pkt
-
+        else:
+            print("notARP",pkt)
 
         actions = [parser.OFPActionOutput(out_port)]
 
