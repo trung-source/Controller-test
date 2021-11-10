@@ -48,7 +48,7 @@ DEFAULT_BW = 10000000
 
 MAX_PATHS = 10
 
-VERBOSE = 1
+VERBOSE = 0
 
 DEBUGING = 0
 
@@ -290,7 +290,7 @@ class ProjectController(app_manager.RyuApp):
                             else:
                                 dup_port[out_ports[i][0]]+=out_ports[j][1]
                                 
-                print("dup: ", dup_port)
+                # print("dup: ", dup_port)
                 
                 del_port = out_ports.copy()
              
@@ -307,7 +307,7 @@ class ProjectController(app_manager.RyuApp):
                 # print("pos",out_ports_1)
                 # print("postype",type(out_ports_1[0]))
                 # print("postype",type(out_ports_1[0][0]),type(out_ports_1[0][1]))
-                          
+                del del_port          
                                 
                             
                     
