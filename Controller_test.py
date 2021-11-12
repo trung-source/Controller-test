@@ -48,7 +48,7 @@ DEFAULT_BW = 10000000
 
 MAX_PATHS = 10
 
-VERBOSE = 1
+VERBOSE = 0
 DEBUGING = 0
 SHOW_PATH = 1
 
@@ -81,7 +81,6 @@ class ProjectController(app_manager.RyuApp):
         
         self.max_bw = {}
         self.curr_max_bw = {}
-        self.all_path = {}
         
         
         
@@ -246,17 +245,6 @@ class ProjectController(app_manager.RyuApp):
         paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
         
         
-        self.all_path = paths
-        
-        # self.all_path = defaultdict(dict)
-        # self.all_path[src][dst] = defaultdict(dict)
-        # self.all_path[src][dst][ip_src][ip_dst] = defaultdict(dict)
-        
-        # # self.all_path.setdefault({src: {dst:{first_port:{last_port:{ip_src}}}}})
-        # self.all_path[src][dst][ip_src][ip_dst][first_port][last_port] = [path,sum_of_pw]
-        # print("path:")
-        # print(self.all_path)
-        
         
         switches_in_paths = set().union(*paths)
         # print(switches_in_paths)
@@ -307,8 +295,6 @@ class ProjectController(app_manager.RyuApp):
 
 
                 out_ports = ports[in_port]
-                # print("pos4type",type(out_ports[0]))
-                # print("pos4type",type(out_ports[0][0]),type(out_ports[0][1]))
             
              
                 dup_port = {}
@@ -871,20 +857,9 @@ class ProjectController(app_manager.RyuApp):
                 req = ofp_parser.OFPGroupMod(datapath, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT, group_id)  
                 datapath.send_msg(req)
 
-    
-    # def groupdel(datapath=None, group_id=ofp.OFPG_ALL):
-    # # """Delete a group (default all groups)."""
-    
-    #     return parser.OFPGroupMod(
-    #         datapath,
-    #         ofp.OFPGC_DELETE,
-    #         0,
-    #         group_id)
         
     def delete_group_mod(self, datapath):
 
-            
-        
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
 
@@ -969,40 +944,21 @@ class ProjectController(app_manager.RyuApp):
      
         # self.max_bw[dpid] = sorted(self.tx_byte_int[dpid].items(), key=lambda x: x[1], reverse=True)  
         self.max_bw[dpid] = {k: v for k, v in sorted(self.tx_byte_int[dpid].items(), key=lambda item: item[1], reverse=True)}
-        # print("keys",self.max_bw[dpid])    
-        # print("keys",tuple(self.max_bw[dpid].keys()))      
         if not self.curr_max_bw[dpid]:
             self.curr_max_bw[dpid]= tuple(self.max_bw[dpid].keys())
         
-        # self.logger.info("Calculating bw")
         
-        
-        # self.LEARNING == 1
-        # h = self.get_host_from_dpid(dpid)
-        # self.logger.info("HOST %s"% (h))
-        # ip = self.get_ip_from_dpid(dpid)
-        
-        # self.logger.info("IP %s"% (ip))
         
         if self.LEARNING == 0:
             # self.logger.info("Calculating bw")
             if self.curr_max_bw[dpid] != tuple(self.max_bw[dpid].keys()):
-                # self.logger.info("Reset weight")
-                # print(self.max_bw)          
+                self.logger.info("Reset weight")         
                 
                 
                 self.curr_max_bw[dpid] = tuple(self.max_bw[dpid].keys())
 
             # GROUP MOD OPTION
                 # Calculate bucket weight
-                
-                
-                
-                # self.all_group_id[dpid][group_id][port] 
-                
-                
-                multi_group = self.multipath_group_ids.copy()
-                
                 for multipath in self.multipath_group_ids.keys():
                     # print("multi",multipath)
                     if not multipath:
@@ -1011,9 +967,7 @@ class ProjectController(app_manager.RyuApp):
                         if dpid == multipath[1]:
                             node = multipath[0]
                             dst = multipath[2]
-                            self.replace_path(dpid,dst)
-                            
-                            
+                            self.replace_path(dpid,dst)                            
                 
               
     def replace_path(self,src,dst):
@@ -1031,7 +985,6 @@ class ProjectController(app_manager.RyuApp):
         self.install_paths(src,self.hosts[h_1][1],dst,self.hosts[h_2][1],ip_1,ip_2)
         self.install_paths(dst,self.hosts[h_2][1],src,self.hosts[h_1][1],ip_2,ip_1)
         
-    
         
     def get_host_from_dpid(self,dpid):
         return [k for k, v in self.hosts.items() if v[0] == dpid]
@@ -1045,25 +998,9 @@ class ProjectController(app_manager.RyuApp):
             # 1 host has only 1 IP
             ip.append(a[0])
         return ip
-                
-            #     if VERBOSE == 1:
-            #         print("Installing: Src:{}, Src in_port{}. Dst:{}, Dst in_port:{}, Src_ip:{}, Dst_ip:{}".format(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip))
-            #     out_port = self.install_paths(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip)
-            #     self.install_paths(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
-            # elif arp_pkt.opcode == arp.ARP_REQUEST:
-            #     if dst_ip in self.arp_table:
-            #         print("dst_ip found in arptable")
-            #         self.arp_table[src_ip] = src
-            #         dst_mac = self.arp_table[dst_ip]
-            #         h1 = self.hosts[src]
-            #         h2 = self.hosts[dst_mac]
-            #         out_port = self.install_paths(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip)
-            #         self.install_paths(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
-            # # if VERBOSE == 1:
+                         
             
-            
-            
-                
+                           
             # DELETE OPTION:
                 # multipath : (node in path, srcid, dstid)
                 # del group id
@@ -1108,12 +1045,6 @@ class ProjectController(app_manager.RyuApp):
                 # # self.arp_table = {}
                 # self.sw_port = {}
                 
-        # print(self.tx_byte_int)
-        # for id in self.datapath_list.keys():
-        #     for port in self.sw_port[id]:
-        #         # if self.tx_byte_int[id][port]
-        #         self.logger.info("Reset weight")
-        #         self.delete_group_mod(self.datapath_list[i])
         
     
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
