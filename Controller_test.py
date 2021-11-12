@@ -46,7 +46,7 @@ REFERENCE_BW = 10000000
 DEFAULT_BW = 10000000
 
 
-MAX_PATHS = 10
+MAX_PATHS = 2
 
 VERBOSE = 0
 DEBUGING = 0
@@ -959,7 +959,8 @@ class ProjectController(app_manager.RyuApp):
 
             # GROUP MOD OPTION
                 # Calculate bucket weight
-                for multipath in self.multipath_group_ids.keys():
+                multipath_list= self.multipath_group_ids.copy()
+                for multipath in multipath_list.keys():
                     # print("multi",multipath)
                     if not multipath:
                         continue
