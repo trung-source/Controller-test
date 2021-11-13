@@ -1,7 +1,7 @@
 from ryu.base import app_manager
 from ryu.controller import mac_to_port
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER, HANDSHAKE_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.mac import haddr_to_bin
@@ -27,10 +27,11 @@ from operator import itemgetter, attrgetter, mul
 from ryu.controller import dpset
 
 from ryu.lib import hub
+from ryu import utils
 
 
 
-
+from ryu.ofproto import ofproto_parser  
 
 
 import os
@@ -46,11 +47,12 @@ REFERENCE_BW = 10000000
 DEFAULT_BW = 10000000
 
 
-MAX_PATHS = 2
+MAX_PATHS = 10
 
 VERBOSE = 0
 DEBUGING = 0
-SHOW_PATH = 1
+SHOW_PATH = 0
+
 
 
 
@@ -105,7 +107,8 @@ class ProjectController(app_manager.RyuApp):
         '''
         Get all paths from src to dst using DFS algorithm    
         '''
-        print("################################################")
+        if SHOW_PATH == 1:
+            print("################################################")
         if src == dst:
             # host target is on the same switch
             return [[src]]
@@ -136,8 +139,9 @@ class ProjectController(app_manager.RyuApp):
                     
                     if VERBOSE == 1:
                         print("--stack",stack)
-        print("################################################")
-        print("Available paths from ", src, " to ", dst, " : ", paths)
+        if SHOW_PATH == 1:
+            print("################################################")
+            print("Available paths from ", src, " to ", dst, " : ", paths)
         
         return paths
 
@@ -178,7 +182,22 @@ class ProjectController(app_manager.RyuApp):
             cost += self.get_link_cost(path[i], path[i+1])
         return cost
 
-
+    def sorted_path(self,paths,pw):
+        # sorted paths based on pw
+        zip_list = zip(pw,paths)
+        sorted_zip_list = sorted(zip_list)
+        sorted_list = [e for _, e in sorted_zip_list]
+       
+        # self.logger.info("sorted:%s",
+                    
+        #                 sorted_list)
+        return sorted_list
+           
+                        
+                        
+                        
+                    
+                
     def get_optimal_paths(self, src, dst):
         '''
         Get the n-most optimal paths according to MAX_PATHS
@@ -186,8 +205,12 @@ class ProjectController(app_manager.RyuApp):
         paths = self.get_paths(src, dst)
         paths_count = len(paths) if len(
             paths) < MAX_PATHS else MAX_PATHS
-        return sorted(paths, key=lambda x: self.get_path_cost(x))[0:(paths_count)]
-
+        pw = []
+        for path in paths:
+            pw.append(self.get_path_cost(path))
+        # print(sorted(paths, key=lambda x: self.get_path_cost(path)[0:(paths_count)]
+        # return sorted(paths, key=lambda x: self.sorted_path(x,paths,pw))[0:(paths_count)],pw[0:(paths_count)]
+        return self.sorted_path(paths,pw)[0:(paths_count)],sorted(pw[0:(paths_count)])
 
     def add_ports_to_paths(self, paths, first_port, last_port):
         '''
@@ -218,30 +241,277 @@ class ProjectController(app_manager.RyuApp):
         
         while n in self.group_ids:
             n = n + 1
-            
         if n < 10:
             s = "{}".format(n)
         if n>=10:
             s = "{}".format(n)
+        
         self.group_ids.append(n)
-        # self.all_group_id.append(int(s))
         return int(s)
+    
+    # def generate_openflow_gid(self,src,dst):
+    #     '''
+    #     Returns a random OpenFlow group id
+    #     '''
+    #     n = random.randint(0, 2**32)
+    #     while n in self.group_ids:
+    #         n = random.randint(0, 2**32)
+    #     self.group_ids.append(n)
+    #     return n
 
 
     def install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst):
         if SHOW_PATH == 1:
             self.path_install_cnt +=1
-            self.logger.info("installing path cnt: %d" % (self.path_install_cnt))
+            # self.logger.info("installing path cnt: %d" % (self.path_install_cnt))
         self.LEARNING = 1
         computation_start = time.time()
-        paths = self.get_optimal_paths(src, dst)
+        paths,pw = self.get_optimal_paths(src, dst)
+        # self.logger.info("paths:%s\n"
+        #                  "pw:%s\n"
+        #                  ,paths,pw)
+
+        
+        # pw = []
+        # for path in paths:
+        #     pw.append(self.get_path_cost(path))
+        #     if VERBOSE == 1:
+        #         print(path, "cost = ", pw[len(pw) - 1])
+        paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
+        
+        
+        
+        switches_in_paths = set().union(*paths)
+        # print(switches_in_paths)
+        if VERBOSE == 1:
+            print(paths_with_ports)
+            # print(pw)
+            print("#adjacency",self.adjacency)
+
+        for node in switches_in_paths:
+
+            dp = self.datapath_list[node]
+            ofp = dp.ofproto
+            ofp_parser = dp.ofproto_parser
+
+
+            # pw is total cost of a path (path weight)
+            # ports contain inport:(outport,pw)
+            ports = defaultdict(list)
+            actions = []
+            i = 0
+
+
+            for path in paths_with_ports:
+                if node in path:
+                    in_port = path[node][0]
+                    out_port = path[node][1]
+                    if (out_port, pw[i]) not in ports[in_port]:
+                        ports[in_port].append((out_port, pw[i]))
+                i += 1
+            if VERBOSE == 1:
+                print("-------------------------------")
+                print("\tnode {}: ports{}".format(node,ports) ) 
+
+            for in_port in ports:
+                # Ipv4
+                match_ip = ofp_parser.OFPMatch(
+                    eth_type=0x0800, 
+                    ipv4_src=ip_src, 
+                    ipv4_dst=ip_dst
+                )
+                # ARP
+                match_arp = ofp_parser.OFPMatch(
+                    eth_type=0x0806, 
+                    arp_spa=ip_src, 
+                    arp_tpa=ip_dst
+                )
+                
+
+
+                out_ports = ports[in_port]
+
+                # print("_OUTPORT",ports)
+
+             
+                # dup_port = {}
+                # for i in range(0,len(out_ports)-1):
+                #     for j in range(i+1,len(out_ports)):
+                #         if out_ports[i][0] == out_ports[j][0]:
+                #             if out_ports[i][0] not in dup_port:
+                #                 dup_port.setdefault(out_ports[i][0],out_ports[i][1]+out_ports[j][1])
+                #             else:
+                #                 dup_port[out_ports[i][0]]+=out_ports[j][1]
+                                
+                # # print("dup: ", dup_port)
+                
+                # del_port = out_ports.copy()
+             
+                # for i in dup_port.keys():
+                #     a=0
+                #     for j in range(len(del_port)):
+                #         if i == del_port[j][0]:
+                #             out_ports.pop(a)
+                #             a = a - 1
+                #         a = a+1
+                #     del_port = out_ports.copy()
+                            
+                #     out_ports.append((i, dup_port[i]))
+                # # print("pos",out_ports_1)
+                # # print("postype",type(out_ports_1[0]))
+                # # print("postype",type(out_ports_1[0][0]),type(out_ports_1[0][1]))
+                # del del_port          
+                                
+                            
+                    
+                    
+                if VERBOSE == 1:
+                    print("\t\t-Outport",out_ports )
+
+
+                if len(out_ports) > 1:
+                    group_id = None
+                    group_new = False
+                    
+                    
+
+                    if (node, src, dst) not in self.multipath_group_ids:
+                        self.all_group_id.setdefault(src,{})
+                        group_new = True
+                        self.multipath_group_ids[
+                            node, src, dst] = self.generate_openflow_gid(src,dst)
+                        self.all_group_id[src].setdefault(self.multipath_group_ids[
+                            node, src, dst], {})
+                        
+                    group_id = self.multipath_group_ids[node, src, dst]
+
+
+                    buckets = []
+                    if VERBOSE == 1:
+                        print("node at ",node," out ports : ",out_ports)
+                        print("groupid",group_id)
+                        
+                        
+                    for port, weight in out_ports:
+                        sum_of_pw = sum(pw) * 1.0
+                        
+                        bucket_weight = int(round((1 - weight/sum_of_pw) * 10))
+                        # self.all_group_id[group_id].setdefault(src,{})
+                        self.all_group_id[src][group_id][port]=bucket_weight
+                        # bucket_weight = 50
+        
+                        
+                        if VERBOSE == 1:
+                            print("bucketw of node{},outport{}:{}".format(node,port,bucket_weight))
+                        bucket_action = [ofp_parser.OFPActionOutput(port)]
+                        buckets.append(
+                            ofp_parser.OFPBucket(
+                                weight=bucket_weight,
+                                # watch_port=port,
+                                watch_port=ofp.OFPP_ANY,                           
+                                watch_group=ofp.OFPG_ANY,
+                                actions=bucket_action
+                            )
+                        )
+
+
+                    if group_new:
+                        req = ofp_parser.OFPGroupMod(
+                            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, group_id,
+                            buckets
+                        )
+                        # print("node at ",node," out ports : ",port)
+                        # print("Group_new dp: ",req)
+                        # print("src ",src," dst: ",dst)
+                        
+                        # print("/////////////////////////////////////")
+                        # dp.send_msg(req)
+
+                        try:
+                            dp.send_msg(req)
+                        except:
+                            self.logger.info("logger GROUPNEW dp %s\n"
+                                            'dpid src %s\n'
+                                            'dpid dst %s\n'
+                                            'group_id %s\n'
+                                            'node: %s\n'
+                                            'Outport %s\n'
+                                            'weight %s\n'
+                                            'sumofweight %s\n'
+                                            'pathweight %s\n'
+                                            
+                                         % (req,src,dst,group_id,node,port,weight,sum_of_pw,pw))
+                            dp.send_msg(req)
+                        
+                            
+                    else:
+                        req = ofp_parser.OFPGroupMod(
+                            dp, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT,
+                            group_id, buckets)
+                        # print("node at ",node," out ports : ",port)
+                        # print("GROUPID dp: ",req)
+                        # print("src ",src," dst: ",dst)
+                        
+                        # dp.send_msg(req)
+                        try:
+                            dp.send_msg(req)
+                        except:
+                            self.logger.info("logger GROUPID dp %s\n"
+                                            'dpid src %s\n'
+                                            'dpid dst %s\n'
+                                            'group_id %s\n'
+                                            'node: %s\n'
+                                            'Outport %s\n'
+                                            'weight %s\n'
+                                            'sumofweight %s\n'
+                                         '  pathweight %s\n'
+
+                                         
+                                         % (req,src,dst,group_id,node,port,weight,sum_of_pw,pw))
+                            dp.send_msg(req)
+                        
+                        # try:
+                        #     dp.send_msg(req)
+                        # except:
+                        #     self.logger.info('logger GROUPID dp %s' % (req))
+                            
+                        # print("Group_mod", time.time() - computation_start)
+
+
+
+                    actions = [ofp_parser.OFPActionGroup(group_id)]
+
+
+                    self.add_flow(dp, 32768, match_ip, actions)
+                    self.add_flow(dp, 1, match_arp, actions)
+
+
+                elif len(out_ports) == 1:
+                    actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
+
+
+                    self.add_flow(dp, 32768, match_ip, actions)
+                    self.add_flow(dp, 1, match_arp, actions)
+        print("Path installation finished in ", time.time() - computation_start )
+        # print(paths_with_ports[0][src][1])
+        return paths_with_ports[0][src][1]
+
+    def install_replace_paths(self, src, first_port, dst, last_port, ip_src, ip_dst):
+        if SHOW_PATH == 1:
+            self.path_install_cnt +=1
+            # self.logger.info("installing path cnt: %d" % (self.path_install_cnt))
+        self.LEARNING = 1
+        computation_start = time.time()
+        paths,pw = self.get_optimal_paths(src, dst)
+    
  
         
-        pw = []
-        for path in paths:
-            pw.append(self.get_path_cost(path))
-            print(path, "cost = ", pw[len(pw) - 1])
-        sum_of_pw = sum(pw) * 1.0
+        # pw = []
+        # for path in paths:
+        #     pw.append(self.get_path_cost(path))
+        #     if VERBOSE == 1:
+        #         print(path, "cost = ", pw[len(pw) - 1])
+        # sum_of_pw = sum(pw) * 1.0
         paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
         
         
@@ -279,51 +549,10 @@ class ProjectController(app_manager.RyuApp):
                 print("\tnode {}: ports{}".format(node,ports) ) 
 
             for in_port in ports:
-                # Ipv4
-                match_ip = ofp_parser.OFPMatch(
-                    eth_type=0x0800, 
-                    ipv4_src=ip_src, 
-                    ipv4_dst=ip_dst
-                )
-                # ARP
-                match_arp = ofp_parser.OFPMatch(
-                    eth_type=0x0806, 
-                    arp_spa=ip_src, 
-                    arp_tpa=ip_dst
-                )
-                
-
-
                 out_ports = ports[in_port]
             
-             
-                dup_port = {}
-                for i in range(0,len(out_ports)-1):
-                    for j in range(i+1,len(out_ports)):
-                        if out_ports[i][0] == out_ports[j][0]:
-                            if out_ports[i][0] not in dup_port:
-                                dup_port.setdefault(out_ports[i][0],out_ports[i][1]+out_ports[j][1])
-                            else:
-                                dup_port[out_ports[i][0]]+=out_ports[j][1]
-                                
-                # print("dup: ", dup_port)
-                
-                del_port = out_ports.copy()
-             
-                for i in dup_port.keys():
-                    a=0
-                    for j in range(len(del_port)):
-                        if i == del_port[j][0]:
-                            out_ports.pop(a)
-                            a = a - 1
-                        a = a+1
-                    del_port = out_ports.copy()
-                            
-                    out_ports.append((i, dup_port[i]))
-                # print("pos",out_ports_1)
-                # print("postype",type(out_ports_1[0]))
-                # print("postype",type(out_ports_1[0][0]),type(out_ports_1[0][1]))
-                del del_port          
+                # print("_MODOUTPORT",ports)
+ 
                                 
                             
                     
@@ -332,19 +561,7 @@ class ProjectController(app_manager.RyuApp):
                     print("\t\t-Outport",out_ports )
 
 
-                if len(out_ports) > 1:
-                    group_id = None
-                    group_new = False
-                    
-                    
-
-                    if (node, src, dst) not in self.multipath_group_ids:
-                        self.all_group_id.setdefault(src,{})
-                        group_new = True
-                        self.multipath_group_ids[
-                            node, src, dst] = self.generate_openflow_gid(src,dst)
-                        self.all_group_id[src].setdefault(self.multipath_group_ids[
-                            node, src, dst], {})
+                if len(out_ports) > 1:             
                         
                     group_id = self.multipath_group_ids[node, src, dst]
 
@@ -356,11 +573,13 @@ class ProjectController(app_manager.RyuApp):
                         
                         
                     for port, weight in out_ports:
+                        sum_of_pw = sum(pw) * 1.0
+                        
                         bucket_weight = int(round((1 - weight/sum_of_pw) * 10))
                         # self.all_group_id[group_id].setdefault(src,{})
                         self.all_group_id[src][group_id][port]=bucket_weight
                         # bucket_weight = 50
-                        # print(self.all_group_id)
+    
                         
                         if VERBOSE == 1:
                             print("bucketw of node{},outport{}:{}".format(node,port,bucket_weight))
@@ -368,181 +587,46 @@ class ProjectController(app_manager.RyuApp):
                         buckets.append(
                             ofp_parser.OFPBucket(
                                 weight=bucket_weight,
-                                watch_port=port,
+                                # watch_port=port,
+                                watch_port=ofp.OFPP_ANY,
                                 watch_group=ofp.OFPG_ANY,
                                 actions=bucket_action
                             )
                         )
 
 
-                    if group_new:
-                        req = ofp_parser.OFPGroupMod(
-                            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, group_id,
-                            buckets
-                        )
-                        dp.send_msg(req)
-                    else:
-                        req = ofp_parser.OFPGroupMod(
-                            dp, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT,
-                            group_id, buckets)
-                        dp.send_msg(req)
-
-
-                    actions = [ofp_parser.OFPActionGroup(group_id)]
-
-
-                    self.add_flow(dp, 32768, match_ip, actions)
-                    self.add_flow(dp, 1, match_arp, actions)
-
-
-                elif len(out_ports) == 1:
-                    actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
-
-
-                    self.add_flow(dp, 32768, match_ip, actions)
-                    self.add_flow(dp, 1, match_arp, actions)
-        print("Path installation finished in ", time.time() - computation_start )
-        print(paths_with_ports[0][src][1])
-        return paths_with_ports[0][src][1]
-
-    def old_install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst):
-        computation_start = time.time()
-        paths = self.get_optimal_paths(src, dst)
-        pw = []
-        for path in paths:
-            pw.append(self.get_path_cost(path))
-            print(path, "cost = ", pw[len(pw) - 1])
-        sum_of_pw = sum(pw) * 1.0
-        paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
-        switches_in_paths = set().union(*paths)
-        # print(switches_in_paths)
-        if VERBOSE == 1:
-            print(paths_with_ports)
-            # print(pw)
-            print("#adjacency",self.adjacency)
-
-        for node in switches_in_paths:
-
-            dp = self.datapath_list[node]
-            ofp = dp.ofproto
-            ofp_parser = dp.ofproto_parser
-
-
-            # pw is total cost of a path (path weight)
-            # ports contain inport:(outport,pw)
-            ports = defaultdict(list)
-            actions = []
-            i = 0
-
-
-            for path in paths_with_ports:
-                if node in path:
-                    in_port = path[node][0]
-                    out_port = path[node][1]
-                    if (out_port, pw[i]) not in ports[in_port]:
-                        ports[in_port].append((out_port, pw[i]))
-                i += 1
-            if VERBOSE == 1:
-                print("-------------------------------")
-                print("\tnode {}: ports{}".format(node,ports) ) 
-
-            for in_port in ports:
-                # Ipv4
-                match_ip = ofp_parser.OFPMatch(
-                    eth_type=0x0800, 
-                    ipv4_src=ip_src, 
-                    ipv4_dst=ip_dst
-                )
-                # ARP
-                match_arp = ofp_parser.OFPMatch(
-                    eth_type=0x0806, 
-                    arp_spa=ip_src, 
-                    arp_tpa=ip_dst
-                )
-
-
-                out_ports = ports[in_port]
-               
-                            
+            
+                    req = ofp_parser.OFPGroupMod(
+                        dp, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT,
+                        group_id, buckets)
+                    # dp.send_msg(req)
                     
+                    # print("node at ",node," out ports : ",port)
+                    # print("src ",src," dst: ",dst)
                     
-                if VERBOSE == 1:
-                    print("\t\t-Outport",out_ports )
-
-
-                if len(out_ports) > 1:
-                    group_id = None
-                    group_new = False
-                    
-                    
-
-                    if (node, src, dst) not in self.multipath_group_ids:
-                        self.all_group_id.setdefault(src,{})
-                        group_new = True
-                        self.multipath_group_ids[
-                            node, src, dst] = self.generate_openflow_gid(src,dst)
-                        self.all_group_id[src].setdefault(self.multipath_group_ids[
-                            node, src, dst], {})
-                        
-                    group_id = self.multipath_group_ids[node, src, dst]
-
-
-                    buckets = []
-                    if VERBOSE == 1:
-                        print("node at ",node," out ports : ",out_ports)
-                        print("groupid",group_id)
-                        
-                        
-                    for port, weight in out_ports:
-                        bucket_weight = int(round((1 - weight/sum_of_pw) * 10))
-                        # self.all_group_id[group_id].setdefault(src,{})
-                        self.all_group_id[src][group_id][port]=bucket_weight
-                        
-                        # bucket_weight = 50
-                        # print(self.all_group_id)
-                        
-                        if VERBOSE == 1:
-                            print("bucketw of node{},outport{}:{}".format(node,port,bucket_weight))
-                        bucket_action = [ofp_parser.OFPActionOutput(port)]
-                        buckets.append(
-                            ofp_parser.OFPBucket(
-                                weight=bucket_weight,
-                                watch_port=port,
-                                watch_group=ofp.OFPG_ANY,
-                                actions=bucket_action
-                            )
-                        )
-
-
-                    if group_new:
-                        req = ofp_parser.OFPGroupMod(
-                            dp, ofp.OFPGC_ADD, ofp.OFPGT_SELECT, group_id,
-                            buckets
-                        )
+                    # print("GROUPMOD dp: ",req)
+                    try:
                         dp.send_msg(req)
-                    else:
-                        req = ofp_parser.OFPGroupMod(
-                            dp, ofp.OFPGC_MODIFY, ofp.OFPGT_SELECT,
-                            group_id, buckets)
+                    except:
+                        self.logger.info("logger GROUPMOD dp %s\n"
+                                         'dpid src %s\n'
+                                         'dpid dst %s\n'
+                                         'group_id %s\n'
+                                         'node: %s\n'
+                                         'Outport %s\n'
+                                         'weight %s\n'
+                                         'sumofweight %s\n'
+                                         'pathweight %s\n'
+                                         
+                                         
+                                         
+                                         % (req,src,dst,group_id,node,port,weight,sum_of_pw,pw))
                         dp.send_msg(req)
+                        
+                    # print("Group_mod", time.time() - computation_start)
+                        # return
+        return 
 
-
-                    actions = [ofp_parser.OFPActionGroup(group_id)]
-
-
-                    self.add_flow(dp, 32768, match_ip, actions)
-                    self.add_flow(dp, 1, match_arp, actions)
-
-
-                elif len(out_ports) == 1:
-                    actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
-
-
-                    self.add_flow(dp, 32768, match_ip, actions)
-                    self.add_flow(dp, 1, match_arp, actions)
-        print("Path installation finished in ", time.time() - computation_start )
-        print(paths_with_ports[0][src][1])
-        return paths_with_ports[0][src][1]
     
 
 
@@ -564,8 +648,52 @@ class ProjectController(app_manager.RyuApp):
             mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
-        
     
+    
+    @set_ev_cls(ofp_event.EventOFPErrorMsg,
+    [HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    # def error_msg_handler(self, ev):
+    #     msg = ev.msg
+    #     # self.logger.info('OFPErrorMsg received: type=0x%02x code=0x%02x '
+        # 'message=%s \n ,msg=%s',
+        # msg.type, msg.code, hex_array(msg.data),msg)
+    
+    def error_msg_handler(self, ev):
+        msg = ev.msg
+        ofp = msg.datapath.ofproto
+        self.logger.debug(
+            "EventOFPErrorMsg received.\n"
+            "version=%s, msg_type=%s, msg_len=%s, xid=%s\n"
+            " `-- msg_type: %s\n"
+            "OFPErrorMsg(type=%s, code=%s, data=b'%s')\n"
+            " |-- type: %s\n"
+            " |-- code: %s\n"
+            " |-- dpid: %s\n"
+            ,
+            
+            hex(msg.version), hex(msg.msg_type), hex(msg.msg_len),
+            hex(msg.xid), ofp.ofp_msg_type_to_str(msg.msg_type),
+            hex(msg.type), hex(msg.code), utils.binary_str(msg.data),
+            ofp.ofp_error_type_to_str(msg.type),
+            ofp.ofp_error_code_to_str(msg.type, msg.code),
+            msg.datapath.id)
+        if msg.type == ofp.OFPET_HELLO_FAILED:
+            self.logger.debug(
+                " `-- data: %s", msg.data.decode('ascii'))
+        elif len(msg.data) >= ofp.OFP_HEADER_SIZE:
+            (version, msg_type, msg_len, xid) = ofproto_parser.header(msg.data)
+            self.logger.debug(
+                " `-- data: version=%s, msg_type=%s, msg_len=%s, xid=%s\n"
+                "     `-- msg_type: %s",
+                hex(version), hex(msg_type), hex(msg_len), hex(xid),
+                ofp.ofp_msg_type_to_str(msg_type))
+        else:
+            self.logger.warning(
+                "The data field sent from the switch is too short: "
+                "len(msg.data) < OFP_HEADER_SIZE\n"
+                "The OpenFlow Spec says that the data field should contain "
+                "at least 64 bytes of the failed request.\n"
+                "Please check the settings or implementation of your switch.")
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _switch_features_handler(self, ev):
@@ -673,7 +801,7 @@ class ProjectController(app_manager.RyuApp):
                 self.install_paths(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
             elif arp_pkt.opcode == arp.ARP_REQUEST:
                 if dst_ip in self.arp_table:
-                    print("dst_ip found in arptable")
+                    # print("dst_ip found in arptable")
                     self.arp_table[src_ip] = src
                     dst_mac = self.arp_table[dst_ip]
                     h1 = self.hosts[src]
@@ -892,27 +1020,27 @@ class ProjectController(app_manager.RyuApp):
         # self.logger.info("PortStat")
         
         dpid = ev.msg.datapath.id
-
         body = ev.msg.body
         
-        port_change = False
-
-        # self.logger.info('datapath         port     '
-        #                  'rx-pkts  rx-bytes rx-error '
-        #                  'tx-pkts  tx-bytes tx-error')
-        # self.logger.info('---------------- -------- '
-        #                  '-------- -------- -------- '
-        #                  '-------- -------- --------')
-        # if dpid == 3 or dpid == 4 or dpid == 5:
-        #     self.logger.info('datapath         port     tx-pkts  tx-bytes')
-        #     self.logger.info('---------------- -------- -------- --------')
+        if dpid == 1:
+            self.logger.info('datapath         port     '
+                                'rx-pkts  rx-bytes rx-error '
+                                'tx-pkts  tx-bytes tx-error')
+            self.logger.info('---------------- -------- '
+                            '-------- -------- -------- '
+                            '-------- -------- --------')
+        if dpid == 1:
+            self.logger.info('datapath         port     tx-pkts  tx-bytes')
+            self.logger.info('---------------- -------- -------- --------')
         for stat in sorted(body, key=attrgetter('port_no')):
             
             if(stat.port_no != 4294967294):
-                # self.logger.info('%016x %8x %8d %8d %8d %8d %8d %8d',
-                #                  ev.msg.datapath.id, stat.port_no,
-                #                  stat.rx_packets, stat.rx_bytes, stat.rx_errors,
-                #                  stat.tx_packets, stat.tx_bytes, stat.tx_errors)
+                if dpid == 1:
+                    
+                    self.logger.info('%016x %8x %8d %8d %8d %8d %8d %8d',
+                                    ev.msg.datapath.id, stat.port_no,
+                                    stat.rx_packets, stat.rx_bytes, stat.rx_errors,
+                                    stat.tx_packets, stat.tx_bytes, stat.tx_errors)
 
                 port_no = stat.port_no
                 self.tx_pkt_cur.setdefault(dpid, {})
@@ -938,6 +1066,11 @@ class ProjectController(app_manager.RyuApp):
                         self.logger.warning('Negative value of interval TX bytes')
                 self.tx_byte_cur[dpid][port_no] = stat.tx_bytes
                 
+                # if dpid == 1:
+                #     if port_no in self.tx_pkt_int[dpid] and port_no in self.tx_byte_int[dpid]:
+                #         self.logger.info('%016x %8x %8d %8d', dpid, port_no,
+                #                         self.tx_pkt_int[dpid][port_no],
+                #                         self.tx_byte_int[dpid][port_no])
                 
             else:
                 pass
@@ -983,8 +1116,8 @@ class ProjectController(app_manager.RyuApp):
         # self.logger.info("IP %s"% (self.hosts))
         # self.logger.info("HOST %s"% (h_1))
         
-        self.install_paths(src,self.hosts[h_1][1],dst,self.hosts[h_2][1],ip_1,ip_2)
-        self.install_paths(dst,self.hosts[h_2][1],src,self.hosts[h_1][1],ip_2,ip_1)
+        self.install_replace_paths(src,self.hosts[h_1][1],dst,self.hosts[h_2][1],ip_1,ip_2)
+        self.install_replace_paths(dst,self.hosts[h_2][1],src,self.hosts[h_1][1],ip_2,ip_1)
         
         
     def get_host_from_dpid(self,dpid):
@@ -1037,7 +1170,7 @@ class ProjectController(app_manager.RyuApp):
                 #     # self.delete_flow(self.datapath_list[i],0)
                 #     # self.logger.info("Reset Topo And ready to install path")
                 #     self.delete_group_mod(self.datapath_list[i])
-                # # self.all_group_id = {}
+   
 
                 
                 # self.multipath_group_ids = {}
@@ -1106,7 +1239,7 @@ class ProjectController(app_manager.RyuApp):
                     # self.delete_flow(self.datapath_list[i],0)
                     self.logger.info("Reset Topo And ready to install path")
                     self.delete_group_mod(self.datapath_list[i])
-                # self.all_group_id = {}
+       
 
                 
                 self.multipath_group_ids = {}
