@@ -364,7 +364,6 @@ class ProjectController(app_manager.RyuApp):
                 
                 
                 dup_port = {}
-                check_dup = True
                 for i in range(0,len(out_ports)-1):
                     if len(dup_port) > 0:
                         if out_ports[i][0] in dup_port.keys():
@@ -456,8 +455,8 @@ class ProjectController(app_manager.RyuApp):
                         buckets.append(
                             ofp_parser.OFPBucket(
                                 weight=bucket_weight,
-                                # watch_port=port,
-                                watch_port=ofp.OFPP_ANY,                           
+                                watch_port=port,
+                                # watch_port=ofp.OFPP_ANY,                           
                                 watch_group=ofp.OFPG_ANY,
                                 actions=bucket_action
                             )
@@ -653,8 +652,8 @@ class ProjectController(app_manager.RyuApp):
                         buckets.append(
                             ofp_parser.OFPBucket(
                                 weight=bucket_weight,
-                                # watch_port=port,
-                                watch_port=ofp.OFPP_ANY,
+                                watch_port=port,
+                                # watch_port=ofp.OFPP_ANY,
                                 watch_group=ofp.OFPG_ANY,
                                 actions=bucket_action
                             )
@@ -883,6 +882,7 @@ class ProjectController(app_manager.RyuApp):
                         
                     else:
                         # print('LIMIT')
+                        self.LEARNING = 1
                         
                         # pass
                         return            
@@ -1164,7 +1164,7 @@ class ProjectController(app_manager.RyuApp):
         if not self.curr_max_bw[dpid]:
             self.curr_max_bw[dpid]= tuple(self.max_bw[dpid].keys())
         
-        
+    
         
         if self.LEARNING == 0:
             # self.logger.info("Calculating bw")
@@ -1184,6 +1184,7 @@ class ProjectController(app_manager.RyuApp):
                     else:
                         if dpid == multipath[1]:
                             dst = multipath[2]
+                            
                             self.replace_path(dpid,dst)                            
                 
               

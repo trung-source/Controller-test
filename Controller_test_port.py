@@ -970,17 +970,6 @@ class ProjectController(app_manager.RyuApp):
         # self.logger.info('pw %s'% pw)
         # self.logger.info('all_path %s'% self.all_path)
         # self.logger.info('cal_pw %s'% cal_pw)
-        
-        
-        
-        
-                  
-        
-        # renew:    
-        
-        
-        # pw = []
-       
         paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
         
         
@@ -1294,10 +1283,10 @@ class ProjectController(app_manager.RyuApp):
                         
                     else:
                         # print('LIMIT')
-                        
-                        # pass
-                        self.LEARNING = 0
-                        return            
+                        self.LEARNING = 1
+                        pass
+                        # self.LEARNING = 0
+                        # return            
             
             
             if VERBOSE == 1:
@@ -1580,9 +1569,9 @@ class ProjectController(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def _port_stats_reply_handler(self, ev):
         # self.logger.info("PortStat")
-        print("--arptable",self.arp_table)
-        print("--host",self.hosts)
         
+        # print("--arptable",self.arp_table)
+        # print("--host",self.hosts)
         dpid = ev.msg.datapath.id
         body = ev.msg.body
         
@@ -1646,7 +1635,7 @@ class ProjectController(app_manager.RyuApp):
         
         
         
-        if self.LEARNING == 0:
+        if self.LEARNING == 50:
             # self.logger.info("Calculating bw")
             if self.curr_max_bw[dpid] != tuple(self.max_bw[dpid].keys()):
                 self.logger.info("Reset weight")         
